@@ -15,6 +15,16 @@ function findCurrentMatchup(schedule, scoringPeriodId, teamId) {
   ) || null;
 }
 
+function findMostRecentMatchup(schedule, teamId) {
+  const teamMatchups = schedule.filter(
+    (m) => m.home?.teamId === teamId || m.away?.teamId === teamId
+  );
+  if (teamMatchups.length === 0) return null;
+  return teamMatchups.reduce((best, m) =>
+    m.matchupPeriodId > best.matchupPeriodId ? m : best
+  );
+}
+
 function extractRosterPlayers(team) {
   if (!team || !team.roster || !team.roster.entries) return [];
   return team.roster.entries.map((entry) => {
@@ -69,10 +79,28 @@ function calculateMarginAnalysis(crossRefData) {
 async function fetchESPNLeague({ leagueId, espnS2, swid, year, teamId }) {
   const url = `https://fantasy.espn.com/apis/v3/games/ffl/seasons/${year}/segments/0/leagues/${leagueId}`;
   const params = { view: ['mTeam', 'mRoster', 'mMatchup', 'mMatchupScore'] };
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Referer': 'https://fantasy.espn.com/',
+    'Origin': 'https://fantasy.espn.com',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'X-Fantasy-Source': 'kona',
+    'X-Fantasy-Platform': 'kona-PROD-m.fantasy.espn.com',
+  };
   if (espnS2 && swid) {
+    // Send the cookie value exactly as copied from browser DevTools — do NOT decode
     headers['Cookie'] = `espn_s2=${espnS2}; SWID=${swid}`;
   }
+
+  console.log('[ESPN REQUEST]', {
+    url,
+    year,
+    leagueId,
+    hasCookies: !!(espnS2 && swid),
+    cookiePreview: espnS2 ? `espn_s2=${espnS2.slice(0, 20)}...; SWID=${swid}` : 'none',
+  });
 
   const response = await axios.get(url, {
     params,
@@ -84,8 +112,54 @@ async function fetchESPNLeague({ leagueId, espnS2, swid, year, teamId }) {
     },
   });
 
-  return response.data;
+  console.log('[ESPN RESPONSE]', {
+    status: response.status,
+    contentType: response.headers['content-type'],
+    isHTML: typeof response.data === 'string' && response.data.trimStart().startsWith('<'),
+    dataType: typeof response.data,
+    topLevelKeys: typeof response.data === 'object' ? Object.keys(response.data).slice(0, 10) : 'not an object',
+  });
+
+  const data = response.data;
+
+  // ESPN returns HTML when the request is rejected (private league / bad cookies / redirect)
+  if (typeof data === 'string' && data.trimStart().startsWith('<')) {
+    const err = new Error(
+      espnS2 && swid
+        ? 'ESPN rejected the request — your espn_s2/SWID cookies may be expired. Please copy fresh cookies from your browser.'
+        : 'ESPN requires authentication for this league. Click "Show private league cookies" and enter your espn_s2 and SWID cookies.'
+    );
+    err.status = 401;
+    throw err;
+  }
+
+  return data;
 }
+
+router.post('/api/debug-league', async (req, res) => {
+  try {
+    const { leagueId, espnS2, swid, year = 2024, teamId } = req.body;
+    if (!leagueId || !teamId) {
+      return res.status(400).json({ error: 'leagueId and teamId are required' });
+    }
+    const data = await fetchESPNLeague({ leagueId, espnS2, swid, year, teamId });
+    const myTeamRaw = (data.teams || []).find((t) => t.id === teamId);
+    res.json({
+      scoringPeriodId: data.scoringPeriodId,
+      scheduleLength: (data.schedule || []).length,
+      teamCount: (data.teams || []).length,
+      myTeamFound: !!myTeamRaw,
+      myTeamId: myTeamRaw?.id,
+      myTeamRosterEntriesCount: myTeamRaw?.roster?.entries?.length ?? 'NO ROSTER KEY',
+      firstEntryKeys: myTeamRaw?.roster?.entries?.[0] ? Object.keys(myTeamRaw.roster.entries[0]) : [],
+      firstPlayerPoolEntry: myTeamRaw?.roster?.entries?.[0]?.playerPoolEntry ?? null,
+      sampleTeamKeys: myTeamRaw ? Object.keys(myTeamRaw) : [],
+    });
+  } catch (err) {
+    const status = err.response?.status || 500;
+    res.status(status).json({ error: err.message, espnBody: err.response?.data });
+  }
+});
 
 router.post('/api/league', async (req, res) => {
   try {
@@ -104,7 +178,8 @@ router.post('/api/league', async (req, res) => {
 
     const myTeam = teams.find((t) => t.id === teamId);
     const scoringPeriodId = data.scoringPeriodId;
-    const currentMatchup = findCurrentMatchup(data.schedule || [], scoringPeriodId, teamId);
+    const currentMatchup = findCurrentMatchup(data.schedule || [], scoringPeriodId, teamId)
+      || findMostRecentMatchup(data.schedule || [], teamId);
 
     let opponentId = null;
     let opponentScore = null;
@@ -127,6 +202,20 @@ router.post('/api/league', async (req, res) => {
 
     const opponentRoster = extractRosterPlayers(opponentTeamRaw);
     const myRoster = extractRosterPlayers(myTeamRaw);
+
+    // DEBUG — remove once roster issue is resolved
+    console.log('[DEBUG top-level keys]', Object.keys(data));
+    console.log('[DEBUG raw snippet]', JSON.stringify(data).slice(0, 1000));
+    console.log('[DEBUG parsed]', {
+      scoringPeriodId,
+      scheduleLength: (data.schedule || []).length,
+      teamCount: (data.teams || []).length,
+      myTeamFound: !!myTeamRaw,
+      opponentId,
+      myRosterCount: myRoster.length,
+      opponentRosterCount: opponentRoster.length,
+    });
+
     const opponentTeam = teams.find((t) => t.id === opponentId);
 
     res.json({
@@ -142,8 +231,8 @@ router.post('/api/league', async (req, res) => {
       myRoster,
     });
   } catch (err) {
-    const status = err.response?.status || 500;
-    const message = err.response?.data?.message || err.message || 'Failed to fetch league data';
+    const status = err.status || err.response?.status || 500;
+    const message = err.message || err.response?.data?.message || 'Failed to fetch league data';
     res.status(status).json({ error: message });
   }
 });
@@ -174,7 +263,8 @@ router.post('/api/leagues/bulk', async (req, res) => {
 
       const myTeam = teams.find((t) => t.id === teamId);
       const scoringPeriodId = data.scoringPeriodId;
-      const currentMatchup = findCurrentMatchup(data.schedule || [], scoringPeriodId, teamId);
+      const currentMatchup = findCurrentMatchup(data.schedule || [], scoringPeriodId, teamId)
+        || findMostRecentMatchup(data.schedule || [], teamId);
 
       let opponentId = null;
       let myScore = null;
@@ -217,6 +307,7 @@ router.post('/api/leagues/bulk', async (req, res) => {
 
 module.exports = router;
 module.exports.findCurrentMatchup = findCurrentMatchup;
+module.exports.findMostRecentMatchup = findMostRecentMatchup;
 module.exports.extractRosterPlayers = extractRosterPlayers;
 module.exports.crossReferencePlayerAcrossLeagues = crossReferencePlayerAcrossLeagues;
 module.exports.calculateMarginAnalysis = calculateMarginAnalysis;

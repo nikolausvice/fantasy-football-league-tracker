@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-export default function LeagueConnector({ onAdd, existingIds = [] }) {
+export default function LeagueConnector({ onAdd, existingIds = [], errorIds = [] }) {
   const [form, setForm] = useState({
     leagueId: '',
     teamId: '',
@@ -28,7 +28,7 @@ export default function LeagueConnector({ onAdd, existingIds = [] }) {
       setError('League ID and Team ID are required.');
       return;
     }
-    if (existingIds.includes(leagueId)) {
+    if (existingIds.includes(leagueId) && !errorIds.includes(leagueId)) {
       setError('This league is already connected.');
       return;
     }

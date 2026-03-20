@@ -3,6 +3,7 @@ const axios = require('axios');
 const app = require('../index');
 const {
   findCurrentMatchup,
+  findMostRecentMatchup,
   extractRosterPlayers,
   crossReferencePlayerAcrossLeagues,
   calculateMarginAnalysis,
@@ -62,6 +63,36 @@ describe('findCurrentMatchup', () => {
 
   test('returns null for empty schedule', () => {
     expect(findCurrentMatchup([], 1, 1)).toBeNull();
+  });
+});
+
+// ── findMostRecentMatchup ────────────────────────────────────────────────────
+
+describe('findMostRecentMatchup', () => {
+  const schedule = [
+    makeMatchup(1, 1, 2),
+    makeMatchup(2, 1, 3),
+    makeMatchup(3, 4, 5),
+  ];
+
+  test('returns the highest-period matchup for the team', () => {
+    const result = findMostRecentMatchup(schedule, 1);
+    expect(result).toBeTruthy();
+    expect(result.matchupPeriodId).toBe(2);
+  });
+
+  test('returns correct matchup when team is away side', () => {
+    const result = findMostRecentMatchup(schedule, 5);
+    expect(result).toBeTruthy();
+    expect(result.matchupPeriodId).toBe(3);
+  });
+
+  test('returns null when team has no matchups', () => {
+    expect(findMostRecentMatchup(schedule, 99)).toBeNull();
+  });
+
+  test('returns null for empty schedule', () => {
+    expect(findMostRecentMatchup([], 1)).toBeNull();
   });
 });
 

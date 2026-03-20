@@ -25,8 +25,13 @@ export default function App() {
     setError(null);
     try {
       if (configs.length === 1) {
-        const data = await fetchLeague(configs[0]);
-        setLeagues([data]);
+        try {
+          const data = await fetchLeague(configs[0]);
+          setLeagues([data]);
+        } catch (err) {
+          const msg = err.response?.data?.error || err.message || 'Failed to load league';
+          setLeagues([{ leagueId: configs[0].leagueId, error: msg }]);
+        }
       } else {
         const data = await fetchLeagues(configs);
         setLeagues(data.leagues || []);
@@ -47,10 +52,16 @@ export default function App() {
     setError(null);
     try {
       const data = await fetchLeague(config);
-      const newConfigs = [...leagueConfigs, config];
+      const exists = leagueConfigs.some((c) => String(c.leagueId) === String(config.leagueId));
+      const newConfigs = exists
+        ? leagueConfigs.map((c) => String(c.leagueId) === String(config.leagueId) ? config : c)
+        : [...leagueConfigs, config];
       setLeagueConfigs(newConfigs);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newConfigs));
-      setLeagues((prev) => [...prev, data]);
+      setLeagues((prev) => {
+        const filtered = prev.filter((l) => String(l.leagueId) !== String(config.leagueId));
+        return [...filtered, data];
+      });
     } catch (err) {
       throw err;
     } finally {
@@ -95,7 +106,11 @@ export default function App() {
           </div>
         )}
 
-        <LeagueConnector onAdd={addLeague} existingIds={leagueConfigs.map((c) => c.leagueId)} />
+        <LeagueConnector
+          onAdd={addLeague}
+          existingIds={leagueConfigs.map((c) => c.leagueId)}
+          errorIds={leagues.filter((l) => l.error).map((l) => l.leagueId)}
+        />
 
         {leagues.length > 0 && (
           <>
