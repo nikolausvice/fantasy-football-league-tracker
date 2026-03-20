@@ -305,14 +305,14 @@ describe('POST /api/league', () => {
     );
   });
 
-  test('returns 401 on ESPN 403 response', async () => {
+  test('returns 403 on ESPN 403 response', async () => {
     const axiosErr = new Error('Forbidden');
     axiosErr.response = { status: 403, data: 'Forbidden' };
     axios.get.mockRejectedValue(axiosErr);
     const res = await request(app)
       .post('/api/league')
       .send({ leagueId: 123, teamId: 1, year: 2024 });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
     expect(res.body.error).toMatch(/authentication/i);
   });
 

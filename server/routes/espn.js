@@ -84,10 +84,9 @@ function sanitizeCookieValue(value) {
 function sanitizeSWID(value) {
   let cleaned = sanitizeCookieValue(value);
   if (!cleaned) return '';
-  // Ensure SWID is wrapped in curly braces
-  if (!cleaned.startsWith('{')) cleaned = '{' + cleaned;
-  if (!cleaned.endsWith('}')) cleaned = cleaned + '}';
-  return cleaned;
+  // Strip any existing braces, then re-wrap to guarantee exactly one pair
+  cleaned = cleaned.replace(/^\{+/, '').replace(/\}+$/, '');
+  return `{${cleaned}}`;
 }
 
 async function fetchESPNLeague({ leagueId, espnS2, swid, year, teamId }) {
@@ -135,12 +134,22 @@ async function fetchESPNLeague({ leagueId, espnS2, swid, year, teamId }) {
           ? 'ESPN rejected the request — your espn_s2/SWID cookies may be expired or invalid. Please copy fresh cookies from your browser.'
           : 'ESPN requires authentication for this league. Click "Show private league cookies" and enter your espn_s2 and SWID cookies.'
       );
-      err.status = 401;
+      err.status = status;
       throw err;
     }
     if (status === 404) {
       const err = new Error(`League ${leagueId} not found. Please check the league ID and season year.`);
       err.status = 404;
+      throw err;
+    }
+    if (status === 429) {
+      const err = new Error('Too many requests to ESPN. Please wait a moment and try again.');
+      err.status = 429;
+      throw err;
+    }
+    if (status >= 400) {
+      const err = new Error(axiosErr.message || `ESPN returned an error (HTTP ${status}).`);
+      err.status = status;
       throw err;
     }
     throw axiosErr;
