@@ -76,45 +76,88 @@ function calculateMarginAnalysis(crossRefData) {
   });
 }
 
+function sanitizeCookieValue(value) {
+  if (!value || typeof value !== 'string') return '';
+  return value.trim().replace(/^["']|["']$/g, '');
+}
+
+function sanitizeSWID(value) {
+  let cleaned = sanitizeCookieValue(value);
+  if (!cleaned) return '';
+  // Strip any existing braces, then re-wrap to guarantee exactly one pair
+  cleaned = cleaned.replace(/^\{+/, '').replace(/\}+$/, '');
+  return `{${cleaned}}`;
+}
+
 async function fetchESPNLeague({ leagueId, espnS2, swid, year, teamId }) {
-  const url = `https://fantasy.espn.com/apis/v3/games/ffl/seasons/${year}/segments/0/leagues/${leagueId}`;
+  const url = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${year}/segments/0/leagues/${leagueId}`;
   const params = { view: ['mTeam', 'mRoster', 'mMatchup', 'mMatchupScore'] };
   const headers = {
-    'Content-Type': 'application/json',
     'Accept': 'application/json',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': 'https://fantasy.espn.com/',
-    'Origin': 'https://fantasy.espn.com',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'X-Fantasy-Source': 'kona',
-    'X-Fantasy-Platform': 'kona-PROD-m.fantasy.espn.com',
   };
-  if (espnS2 && swid) {
-    // Send the cookie value exactly as copied from browser DevTools — do NOT decode
-    headers['Cookie'] = `espn_s2=${espnS2}; SWID=${swid}`;
+
+  const cleanS2 = sanitizeCookieValue(espnS2);
+  const cleanSWID = sanitizeSWID(swid);
+
+  if (cleanS2 && cleanSWID) {
+    headers['Cookie'] = `espn_s2=${cleanS2}; SWID=${cleanSWID}`;
   }
 
   console.log('[ESPN REQUEST]', {
     url,
     year,
     leagueId,
-    hasCookies: !!(espnS2 && swid),
-    cookiePreview: espnS2 ? `espn_s2=${espnS2.slice(0, 20)}...; SWID=${swid}` : 'none',
+    hasCookies: !!(cleanS2 && cleanSWID),
+    cookiePreview: cleanS2 ? `espn_s2=${cleanS2.slice(0, 20)}...; SWID=${cleanSWID}` : 'none',
   });
 
-  const response = await axios.get(url, {
-    params,
-    headers,
-    paramsSerializer: (p) => {
-      return Object.entries(p)
-        .flatMap(([k, v]) => (Array.isArray(v) ? v.map((val) => `${k}=${val}`) : [`${k}=${v}`]))
-        .join('&');
-    },
-  });
+  let response;
+  try {
+    response = await axios.get(url, {
+      params,
+      headers,
+      timeout: 15000,
+      maxRedirects: 0,
+      validateStatus: (status) => status < 400,
+      paramsSerializer: (p) => {
+        return Object.entries(p)
+          .flatMap(([k, v]) => (Array.isArray(v) ? v.map((val) => `${k}=${val}`) : [`${k}=${v}`]))
+          .join('&');
+      },
+    });
+  } catch (axiosErr) {
+    const status = axiosErr.response?.status;
+    if (status === 401 || status === 403) {
+      const err = new Error(
+        cleanS2 && cleanSWID
+          ? 'ESPN rejected the request — your espn_s2/SWID cookies may be expired or invalid. Please copy fresh cookies from your browser.'
+          : 'ESPN requires authentication for this league. Click "Show private league cookies" and enter your espn_s2 and SWID cookies.'
+      );
+      err.status = status;
+      throw err;
+    }
+    if (status === 404) {
+      const err = new Error(`League ${leagueId} not found. Please check the league ID and season year.`);
+      err.status = 404;
+      throw err;
+    }
+    if (status === 429) {
+      const err = new Error('Too many requests to ESPN. Please wait a moment and try again.');
+      err.status = 429;
+      throw err;
+    }
+    if (status >= 400) {
+      const err = new Error(axiosErr.message || `ESPN returned an error (HTTP ${status}).`);
+      err.status = status;
+      throw err;
+    }
+    throw axiosErr;
+  }
 
   console.log('[ESPN RESPONSE]', {
     status: response.status,
-    contentType: response.headers['content-type'],
+    contentType: response.headers?.['content-type'] || 'unknown',
     isHTML: typeof response.data === 'string' && response.data.trimStart().startsWith('<'),
     dataType: typeof response.data,
     topLevelKeys: typeof response.data === 'object' ? Object.keys(response.data).slice(0, 10) : 'not an object',
@@ -125,7 +168,7 @@ async function fetchESPNLeague({ leagueId, espnS2, swid, year, teamId }) {
   // ESPN returns HTML when the request is rejected (private league / bad cookies / redirect)
   if (typeof data === 'string' && data.trimStart().startsWith('<')) {
     const err = new Error(
-      espnS2 && swid
+      cleanS2 && cleanSWID
         ? 'ESPN rejected the request — your espn_s2/SWID cookies may be expired. Please copy fresh cookies from your browser.'
         : 'ESPN requires authentication for this league. Click "Show private league cookies" and enter your espn_s2 and SWID cookies.'
     );
@@ -311,3 +354,5 @@ module.exports.findMostRecentMatchup = findMostRecentMatchup;
 module.exports.extractRosterPlayers = extractRosterPlayers;
 module.exports.crossReferencePlayerAcrossLeagues = crossReferencePlayerAcrossLeagues;
 module.exports.calculateMarginAnalysis = calculateMarginAnalysis;
+module.exports.sanitizeCookieValue = sanitizeCookieValue;
+module.exports.sanitizeSWID = sanitizeSWID;

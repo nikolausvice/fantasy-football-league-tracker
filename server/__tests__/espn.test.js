@@ -7,6 +7,8 @@ const {
   extractRosterPlayers,
   crossReferencePlayerAcrossLeagues,
   calculateMarginAnalysis,
+  sanitizeCookieValue,
+  sanitizeSWID,
 } = require('../routes/espn');
 
 jest.mock('axios');
@@ -246,7 +248,7 @@ describe('POST /api/league', () => {
   };
 
   beforeEach(() => {
-    axios.get.mockResolvedValue({ data: mockESPNResponse });
+    axios.get.mockResolvedValue({ data: mockESPNResponse, status: 200, headers: { 'content-type': 'application/json' } });
   });
 
   afterEach(() => {
@@ -281,16 +283,48 @@ describe('POST /api/league', () => {
     expect(res.body.error).toBeTruthy();
   });
 
-  test('passes cookies for private leagues', async () => {
+  test('passes sanitized cookies for private leagues', async () => {
     await request(app)
       .post('/api/league')
-      .send({ leagueId: 123, teamId: 1, year: 2024, espnS2: 'abc', swid: '{xyz}' });
+      .send({ leagueId: 123, teamId: 1, year: 2024, espnS2: '  abc  ', swid: '  {xyz}  ' });
     expect(axios.get).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
         headers: expect.objectContaining({ Cookie: 'espn_s2=abc; SWID={xyz}' }),
       })
     );
+  });
+
+  test('uses lm-api-reads.fantasy.espn.com endpoint', async () => {
+    await request(app)
+      .post('/api/league')
+      .send({ leagueId: 123, teamId: 1, year: 2024 });
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('lm-api-reads.fantasy.espn.com'),
+      expect.any(Object)
+    );
+  });
+
+  test('returns 403 on ESPN 403 response', async () => {
+    const axiosErr = new Error('Forbidden');
+    axiosErr.response = { status: 403, data: 'Forbidden' };
+    axios.get.mockRejectedValue(axiosErr);
+    const res = await request(app)
+      .post('/api/league')
+      .send({ leagueId: 123, teamId: 1, year: 2024 });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/authentication/i);
+  });
+
+  test('returns 404 when league not found', async () => {
+    const axiosErr = new Error('Not Found');
+    axiosErr.response = { status: 404, data: 'Not Found' };
+    axios.get.mockRejectedValue(axiosErr);
+    const res = await request(app)
+      .post('/api/league')
+      .send({ leagueId: 999, teamId: 1, year: 2024 });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
   });
 });
 
@@ -308,7 +342,7 @@ describe('POST /api/leagues/bulk', () => {
   };
 
   beforeEach(() => {
-    axios.get.mockResolvedValue({ data: mockESPNResponse });
+    axios.get.mockResolvedValue({ data: mockESPNResponse, status: 200, headers: { 'content-type': 'application/json' } });
   });
 
   afterEach(() => {
@@ -331,7 +365,7 @@ describe('POST /api/leagues/bulk', () => {
 
   test('handles partial failures gracefully', async () => {
     axios.get
-      .mockResolvedValueOnce({ data: mockESPNResponse })
+      .mockResolvedValueOnce({ data: mockESPNResponse, status: 200, headers: { 'content-type': 'application/json' } })
       .mockRejectedValueOnce(new Error('Failed'));
     const res = await request(app)
       .post('/api/leagues/bulk')
@@ -339,5 +373,57 @@ describe('POST /api/leagues/bulk', () => {
     expect(res.status).toBe(200);
     expect(res.body.leagues[0].leagueName).toBe('Bulk League');
     expect(res.body.leagues[1].error).toBeTruthy();
+  });
+});
+
+// ── sanitizeCookieValue ──────────────────────────────────────────────────────
+
+describe('sanitizeCookieValue', () => {
+  test('trims whitespace', () => {
+    expect(sanitizeCookieValue('  abc123  ')).toBe('abc123');
+  });
+
+  test('strips surrounding quotes', () => {
+    expect(sanitizeCookieValue('"abc123"')).toBe('abc123');
+    expect(sanitizeCookieValue("'abc123'")).toBe('abc123');
+  });
+
+  test('returns empty string for falsy values', () => {
+    expect(sanitizeCookieValue('')).toBe('');
+    expect(sanitizeCookieValue(null)).toBe('');
+    expect(sanitizeCookieValue(undefined)).toBe('');
+  });
+
+  test('handles value with internal whitespace', () => {
+    expect(sanitizeCookieValue('  abc def  ')).toBe('abc def');
+  });
+});
+
+// ── sanitizeSWID ─────────────────────────────────────────────────────────────
+
+describe('sanitizeSWID', () => {
+  test('preserves correctly formatted SWID', () => {
+    expect(sanitizeSWID('{ABCD-1234}')).toBe('{ABCD-1234}');
+  });
+
+  test('adds missing curly braces', () => {
+    expect(sanitizeSWID('ABCD-1234')).toBe('{ABCD-1234}');
+    expect(sanitizeSWID('{ABCD-1234')).toBe('{ABCD-1234}');
+    expect(sanitizeSWID('ABCD-1234}')).toBe('{ABCD-1234}');
+  });
+
+  test('trims whitespace and adds braces', () => {
+    expect(sanitizeSWID('  ABCD-1234  ')).toBe('{ABCD-1234}');
+    expect(sanitizeSWID('  {ABCD-1234}  ')).toBe('{ABCD-1234}');
+  });
+
+  test('strips surrounding quotes', () => {
+    expect(sanitizeSWID('"{ABCD-1234}"')).toBe('{ABCD-1234}');
+  });
+
+  test('returns empty string for falsy values', () => {
+    expect(sanitizeSWID('')).toBe('');
+    expect(sanitizeSWID(null)).toBe('');
+    expect(sanitizeSWID(undefined)).toBe('');
   });
 });
